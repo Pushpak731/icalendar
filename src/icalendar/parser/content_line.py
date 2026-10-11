@@ -186,19 +186,42 @@ class Contentline(str):
             name_split: int | None = None
             value_split: int | None = None
             in_quotes: bool = False
-            escaped: bool = False
+            # a quoted section opened by ``\"`` (Apple, #219) closes on the
+            # matching ``\"``; one opened by a bare ``"`` treats ``\"`` as
+            # content (:rfc:`2445`-style, #1870)
+            quotes_opened_escaped: bool = False
+            # whether the pending backslash was written outside any quoted
+            # section, inside a ``\"``-opened one, or inside a ``"``-opened one
+            escape_origin: str | None = None  # "outside" | "escaped" | "quoted"
 
             for i, ch in enumerate(self):
-                if escaped:
-                    # the previous character was an escaping backslash:
-                    # outside quotes it protects a delimiter, inside quotes
-                    # it protects the closing quote (``\"``), which must not
-                    # toggle the quote state (:rfc:`2445`-style input)
-                    escaped = False
+                if escape_origin == "outside" and ch == '"':
+                    # Apple writes escaped DQUOTEs around parameter values,
+                    # e.g. ``X-APPLE-ABUID=\"ab://Home\"`` (#219): the pair
+                    # opens a quoted section so the colons of the value are
+                    # not taken for the value separator
+                    in_quotes = True
+                    quotes_opened_escaped = True
+                    escape_origin = None
+                elif escape_origin == "escaped" and ch == '"':
+                    # and the matching ``\"`` closes it again
+                    in_quotes = False
+                    quotes_opened_escaped = False
+                    escape_origin = None
+                elif escape_origin is not None:
+                    # the escaped character is content: inside a
+                    # ``"``-opened section ``\"`` must not close the quote
+                    # (:rfc:`2445`-style input, #1870)
+                    escape_origin = None
                 elif ch == "\\":
-                    escaped = True
+                    if in_quotes:
+                        escape_origin = "escaped" if quotes_opened_escaped else "quoted"
+                    else:
+                        escape_origin = "outside"
                 elif ch == '"':
                     in_quotes = not in_quotes
+                    if in_quotes:
+                        quotes_opened_escaped = False
                 elif not in_quotes and ch in ":;":
                     # Find first delimiter for name
                     if name_split is None:

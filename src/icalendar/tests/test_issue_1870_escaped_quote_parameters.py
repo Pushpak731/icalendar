@@ -223,10 +223,12 @@ class TestParametersFromIcal:
         assert params["MEMBER"] == [f"a{Q}b", "c"]
 
     def test_unquoted_value_with_backslash_is_rejected(self):
-        """In an *unquoted* parameter value a raw DQUOTE is not allowed
-        (RFC 5545 §3.1 SAFE-CHAR excludes it), so the case of an
-        "unquoted value with an escaped quote" cannot arise — the
-        validator rejects the raw quote before any unescaping happens."""
+        """An *unquoted* parameter value may not contain a colon (RFC 5545
+        §3.1 SAFE-CHAR excludes it), whatever its quote state. The escaped
+        DQUOTE itself is accepted since #219 (Apple's X-ADDRESS) — this
+        value rejects because of the ``http:`` colon. The escaped-quote
+        acceptance and the raw-DQUOTE rejection are covered in
+        ``test_issue_219_apple_structured_location.py``."""
         with pytest.raises(ValueError, match="not a valid parameter"):
             Parameters.from_ical(f"URL=http://x/{BS}{Q}y")
 

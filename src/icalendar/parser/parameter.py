@@ -171,17 +171,41 @@ def q_split(st: str, sep: str = ",", maxsplit: int = -1) -> list[str]:
     cursor = 0
     length = len(st)
     inquote = 0
-    escaped = False
+    # a quoted section opened by ``\"`` (Apple pseudo-quoting, #219) is
+    # closed by the matching ``\"``; one opened by a bare ``"`` treats
+    # ``\"`` as content (:rfc:`2445`-style, #1870)
+    opened_escaped = False
+    # whether the pending backslash escape started outside any quoted
+    # section, inside a ``\"``-opened one, or inside a ``"``-opened one
+    escape_origin: str | None = None  # "outside" | "escaped" | "quoted"
     splits = 0
     for i, ch in enumerate(st):
-        if inquote and escaped:
-            # an escaped character inside a quoted section is content:
-            # ``\"`` does not close the quote (RFC 2445-style input)
-            escaped = False
-        elif inquote and ch == "\\":
-            escaped = True
+        if escape_origin == "outside" and ch == '"':
+            # Apple writes escaped DQUOTEs around parameter values, e.g.
+            # ``X-APPLE-ABUID=\"ab://Home\"`` (#219): the pair opens a
+            # quoted section so separators inside the value do not split
+            inquote = 1
+            opened_escaped = True
+            escape_origin = None
+        elif escape_origin == "escaped" and ch == '"':
+            # ... and the matching ``\"`` closes it again
+            inquote = 0
+            opened_escaped = False
+            escape_origin = None
+        elif escape_origin is not None:
+            # the escaped character is content: inside a ``"``-opened
+            # section ``\"`` must not close the quote (RFC 2445-style
+            # input, #1870)
+            escape_origin = None
+        elif ch == "\\":
+            if inquote:
+                escape_origin = "escaped" if opened_escaped else "quoted"
+            else:
+                escape_origin = "outside"
         elif ch == '"':
             inquote = not inquote
+            if inquote:
+                opened_escaped = False
         if not inquote and ch == sep:
             result.append(st[cursor:i])
             cursor = i + 1
@@ -396,12 +420,33 @@ class Parameters(CaselessDict):
                         v2 = v[1:-1]
                         validate_param_value(v2.replace('\\"', ""), quoted=True)
                         vals.append(rfc_6868_unescape(unescape_quoted_param_value(v2)))
+                    elif v.startswith('\\"') and v.endswith('\\"') and len(v) >= 4:
+                        # Apple pseudo-quoting (#219): the producer escapes
+                        # the quotes of an otherwise normal quoted value,
+                        # e.g. ``X-APPLE-ABUID=\"ab://Home\"``. The pair
+                        # delimits the value like a quoted string would.
+                        v2 = v[2:-2]
+                        validate_param_value(v2.replace('\\"', ""), quoted=True)
+                        vals.append(rfc_6868_unescape(unescape_quoted_param_value(v2)))
                     else:
-                        validate_param_value(v, quoted=False)
-                        if strict:
-                            vals.append(rfc_6868_unescape(v.upper()))
+                        if '"' in v:
+                            # An unquoted parameter value with an escaped
+                            # DQUOTE. Strictly, a raw DQUOTE is not a
+                            # SAFE-CHAR (RFC 5545 §3.1) — but Apple ships
+                            # exactly this in X-APPLE-STRUCTURED-LOCATION's
+                            # X-ADDRESS (#219), so the escaped form is
+                            # accepted like a quoted value: validate the
+                            # still-escaped form (a raw, unescaped DQUOTE
+                            # still rejects) and resolve ``\"`` to ``"``,
+                            # left to right, as for quoted values.
+                            validate_param_value(v.replace('\\"', ""), quoted=False)
+                            value = unescape_quoted_param_value(v)
                         else:
-                            vals.append(rfc_6868_unescape(v))
+                            validate_param_value(v, quoted=False)
+                            value = v
+                        vals.append(
+                            rfc_6868_unescape(value.upper() if strict else value)
+                        )
                 if not vals:
                     result[key] = val
                 elif len(vals) == 1:
